@@ -1,0 +1,207 @@
+# Jungle Gaming — Distributed Wagering Processor
+#
+# HTTP request file for use with the REST Client extension (VS Code)
+# or any HTTP client that understands this format.
+#
+# Before using:
+#   1. Start the stack:      docker compose up -d
+#   2. Apply migrations:     bun run migrate:up
+#   3. Start the app:        bun run start:dev
+#   4. Adjust @host and @port below if you changed PORT in .env (default: 3000).
+#
+# The wallet creation requests send an explicit "id" so that @walletId below
+# always matches the created wallet. If you re-run the file against the same
+# database, change the ids (or clear the wallets) to avoid a duplicate error.
+#
+# Tip: use "###" to separate each request; REST Client lets you run only the
+# block where the cursor is.
+
+@host = localhost
+@port = 3000
+@baseUrl = http://{{host}}:{{port}}
+@playerId = player-001
+@currency = BRL
+@providerId = provider-1
+@walletId = 22222222-2222-4222-8222-222222222222
+@walletIdEmpty = 22222222-2222-4222-8222-222222222223
+
+### Health — liveness (process alive) — outside /api
+GET {{baseUrl}}/health/live
+
+### Health — readiness (PostgreSQL + SQS) — outside /api
+GET {{baseUrl}}/health/ready
+
+### Metrics
+GET {{baseUrl}}/api/metrics
+
+### Create a wallet with an initial balance (creates an OPENING transaction + a CREDIT ledger entry)
+POST {{baseUrl}}/api/wallets
+Content-Type: application/json
+
+{
+  "id": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "initialBalance": { "amount": "100.00", "currency": "{{currency}}" }
+}
+
+### Create a wallet with no initial balance
+POST {{baseUrl}}/api/wallets
+Content-Type: application/json
+
+{
+  "id": "{{walletIdEmpty}}",
+  "playerId": "player-002",
+  "initialBalance": { "amount": "0.00", "currency": "BRL" }
+}
+
+### Get a wallet by id
+GET {{baseUrl}}/api/wallets/{{walletId}}
+
+### List a wallet's ledger entries
+GET {{baseUrl}}/api/wallets/{{walletId}}/ledger
+
+### Submit a BET (debits the wallet)
+# The Idempotency-Key header is required for safe replay.
+# Use the same key and payload to test idempotency; change the amount to get a conflict.
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:bet-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "bet-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "BET",
+  "money": { "amount": "30.00", "currency": "BRL" }
+}
+
+### Resend the SAME bet (should replay, with no new debit)
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:bet-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "bet-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "BET",
+  "money": { "amount": "30.00", "currency": "BRL" }
+}
+
+### Same key, different payload (should return 409 IDEMPOTENCY_CONFLICT)
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:bet-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "bet-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "BET",
+  "money": { "amount": "99.00", "currency": "BRL" }
+}
+
+### WIN (credits the wallet)
+# WIN does not require a reference; a win amount may differ from the bet.
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:win-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "win-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "WIN",
+  "money": { "amount": "45.00", "currency": "BRL" }
+}
+
+### LOSS (no balance change, no ledger entry)
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:loss-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "loss-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "LOSS",
+  "money": { "amount": "30.00", "currency": "BRL" }
+}
+
+### REFUND referencing the bet (credits the wallet)
+# REFUND requires a reference of kind BET, with the same amount/player/wallet/round.
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:refund-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "refund-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "REFUND",
+  "money": { "amount": "30.00", "currency": "BRL" },
+  "referenceExternalTransactionId": "bet-0001"
+}
+
+### ROLLBACK of a WIN (inverts the direction: debits)
+# ROLLBACK requires a reference of kind BET/WIN/REFUND, with the same amount.
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:rollback-0001
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "rollback-0001",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "ROLLBACK",
+  "money": { "amount": "45.00", "currency": "BRL" },
+  "referenceExternalTransactionId": "win-0001"
+}
+
+### REFUND before its reference exists (stays PENDING_REFERENCE, no balance movement)
+POST {{baseUrl}}/api/wagering/transactions
+Content-Type: application/json
+Idempotency-Key: {{providerId}}:refund-early
+
+{
+  "providerId": "{{providerId}}",
+  "externalTransactionId": "refund-early",
+  "walletId": "{{walletId}}",
+  "playerId": "{{playerId}}",
+  "roundId": "round-0001",
+  "gameId": "game-001",
+  "kind": "REFUND",
+  "money": { "amount": "10.00", "currency": "BRL" },
+  "referenceExternalTransactionId": "bet-that-does-not-exist-yet"
+}
+
+### Get a transaction by id
+# Replace with the transactionId returned by a POST
+GET {{baseUrl}}/api/wagering/transactions/33333333-3333-4333-8333-333333333333
+
+### Get a transaction by provider + external id
+GET {{baseUrl}}/api/providers/provider-1/wagering/transactions/bet-0001
+
+### Reconciliation (compares the materialized balance with the ledger reconstruction)
+POST {{baseUrl}}/api/wallets/{{walletId}}/reconciliation

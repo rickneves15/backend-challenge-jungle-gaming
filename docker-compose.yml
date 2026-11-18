@@ -1,0 +1,81 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: jungle-postgres
+    environment:
+      POSTGRES_USER: jungle
+      POSTGRES_PASSWORD: jungle
+      POSTGRES_DB: jungle_gaming
+    ports:
+      - "5432:5432"
+    volumes:
+      - jungle_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U jungle -d jungle_gaming"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  localstack:
+    image: localstack/localstack:3.4
+    container_name: jungle-localstack
+    environment:
+      SERVICES: sqs
+      DEFAULT_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      AWS_DEFAULT_REGION: us-east-1
+      LOCALSTACK_HOST: 0.0.0.0
+      EDGE_PORT: 4566
+    ports:
+      - "4566:4566"
+    volumes:
+      - "./.localstack/init:/etc/localstack/init/ready.d"
+      - jungle_localstack_data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://localhost:4566/_localstack/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
+  app:
+    build: .
+    container_name: jungle-app
+    depends_on:
+      postgres:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      PGHOST: postgres
+      PGPORT: 5432
+      PGUSER: jungle
+      PGPASSWORD: jungle
+      PGDATABASE: jungle_gaming
+      AWS_REGION: us-east-1
+      AWS_ACCESS_KEY_ID: test
+      AWS_SECRET_ACCESS_KEY: test
+      SQS_ENDPOINT: http://localstack:4566
+      SQS_QUEUE_URL: http://localstack:4566/000000000000/wager-transactions.fifo
+      SQS_DLQ_URL: http://localstack:4566/000000000000/wager-transactions-dlq.fifo
+      WORKER_ROLES: all
+      METRICS_INSTANCE_ID: compose-app
+    command: ["sh", "-c", "bun run migrate:up && bun run src/main.ts"]
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test:
+        - CMD
+        - bun
+        - -e
+        - "fetch('http://localhost:3000/health/live').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+
+volumes:
+  jungle_postgres_data:
+  jungle_localstack_data:
